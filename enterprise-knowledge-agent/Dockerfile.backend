@@ -1,0 +1,33 @@
+# 后端服务 Dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# 安装系统依赖（curl 用于健康检查）
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制依赖文件
+COPY requirements.txt .
+
+# 安装Python依赖
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 复制项目文件
+COPY backend/ ./backend/
+COPY conftest.py ./
+
+# 创建数据目录
+RUN mkdir -p data/uploads data/chroma_db data/memory
+
+# 暴露端口
+EXPOSE 8000
+
+# 启动后端服务
+CMD ["python", "-m", "backend.main"]

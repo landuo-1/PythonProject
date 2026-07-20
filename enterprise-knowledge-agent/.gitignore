@@ -1,0 +1,96 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Logs
+*.log
+logs/
+
+# Environments
+.env
+.env.local
+.env.*.local
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ==================== 项目数据（安全敏感）====================
+
+# 用户数据（密码哈希、JWT 密钥相关）
+backend/data/users.json
+
+# 用户记忆数据（对话历史、个人偏好）
+backend/data/memory/
+
+# ChromaDB 向量数据库（包含文档内容）
+backend/data/chroma_db/
+
+# BM25 索引（包含文档内容）
+backend/data/bm25_index/
+
+# 上传的原始文件
+backend/data/uploads/
+
+# 测试文档（用于基准测试，非项目代码）
+test_docs/
+
+# 旧版测试文件
+tests/benchmark_rag.py
+tests/run_benchmark.py
+
+# Docker
+docker-compose.override.yml
+
+# Temporary files
+*.tmp
+*.temp

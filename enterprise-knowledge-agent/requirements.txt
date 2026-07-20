@@ -1,0 +1,52 @@
+# 核心依赖
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+pydantic==2.11.4
+pydantic-settings==2.9.1
+python-dotenv==1.1.0
+python-multipart==0.0.20
+
+# LangChain生态
+langchain==0.3.25
+langchain-core==0.3.63
+langchain-community==0.3.24
+langchain-openai==0.3.18
+langchain-text-splitters==0.3.8
+
+# LangGraph
+langgraph==0.4.1
+
+# 向量数据库
+chromadb==1.0.11
+
+# Embedding模型
+fastembed>=0.8.0
+
+# 文档处理
+pypdf==5.6.0
+python-docx>=1.0.0
+docx2txt>=0.8
+openpyxl==3.1.5
+pandas==2.2.3
+
+# BM25检索
+bm25s>=0.3.0,<1.0.0
+jieba==0.42.1
+
+# 重排序（可选）
+sentence-transformers>=3.0.0
+
+# 前端
+streamlit==1.45.1
+
+# HTTP客户端
+requests==2.32.3
+
+# 工具
+tavily-python==0.7.3
+
+# 测试
+pytest==8.4.1
+
+# 其他依赖
+numpy>=1.26.0
