@@ -95,9 +95,10 @@ streamlit run frontend/app.py
 | `TAVILY_API_KEY` | Tavily 搜索 API | 否 | - |
 | `RERANKER_ENABLED` | 开启重排序 | 否 | `false` |
 | `EVAL_ENABLED` | 启用质量评估 | 否 | `false` |
-| `EVAL_FAITHFULNESS_THRESHOLD` | 忠实度阈值 | 否 | `0.90` |
-| `EVAL_RELEVANCY_THRESHOLD` | 答案相关性阈值 | 否 | `0.75` |
+| `EVAL_FAITHFULNESS_THRESHOLD` | 忠实度阈值 | 否 | `0.70` |
+| `EVAL_RELEVANCY_THRESHOLD` | 答案相关性阈值 | 否 | `0.50` |
 | `EVAL_DEGRADATION_STRATEGY` | 降级策略 | 否 | `retry` |
+| `AGENT_MAX_RETRIES` | 评估不达标时最大重试次数 | 否 | `1` |
 
 ### 内置配置
 

@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional
 from functools import lru_cache
 from pathlib import Path
@@ -36,19 +37,20 @@ class Settings(BaseSettings):
 
     # 质量评估配置
     EVAL_ENABLED: bool = False  # 是否启用质量评估（规则检查，无额外模型）
-    EVAL_FAITHFULNESS_THRESHOLD: float = 0.90  # 忠实度阈值
-    EVAL_RELEVANCY_THRESHOLD: float = 0.75  # 答案相关性阈值
+    EVAL_FAITHFULNESS_THRESHOLD: float = 0.70  # 忠实度阈值
+    EVAL_RELEVANCY_THRESHOLD: float = 0.50  # 答案相关性阈值
     EVAL_DEGRADATION_STRATEGY: str = "retry"  # 降级策略: retry / fallback / human_review
 
     # 文件上传配置
     UPLOAD_DIR: str = str(data_dir / "uploads")
     MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
-    ALLOWED_EXTENSIONS: list = [".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls"]
+    ALLOWED_EXTENSIONS: list = [".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls", ".csv"]
 
-    class Config:
-        env_file = str(env_file_path)
-        env_file_encoding = "utf-8"
-        extra = "ignore"  # 忽略 .env 中的多余变量（如旧版 BM25_WEIGHT）
+    model_config = ConfigDict(
+        env_file=str(env_file_path),
+        env_file_encoding="utf-8",
+        extra="ignore",  # 忽略 .env 中的多余变量
+    )
 
 @lru_cache()
 def get_settings() -> Settings:

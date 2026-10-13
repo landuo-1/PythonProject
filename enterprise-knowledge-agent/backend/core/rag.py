@@ -81,7 +81,7 @@ class _EmbeddingSingleton:
 
             class FastEmbedEmbeddings(Embeddings):
                 def __init__(self):
-                    self.model = TextEmbedding('BAAI/bge-small-en-v1.5')
+                    self.model = TextEmbedding('BAAI/bge-small-zh-v1.5')
 
                 def embed_documents(self, texts):
                     return [[float(x) for x in vec] for vec in self.model.embed(texts)]
@@ -127,7 +127,7 @@ class RAGEngine:
     def vector_store(self):
         """延迟加载向量存储"""
         if self._vector_store is None:
-            from langchain_community.vectorstores import Chroma
+            from langchain_chroma import Chroma
             os.makedirs(settings.CHROMA_PERSIST_DIR, exist_ok=True)
             self._vector_store = Chroma(
                 collection_name=settings.CHROMA_COLLECTION_NAME,
@@ -1045,7 +1045,8 @@ class RAGEngine:
         try:
             collection = self.vector_store._collection
             return collection.count()
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[RAG] 获取文档数量失败: {e}")
             return 0
 
     def clear(self):
@@ -1056,14 +1057,14 @@ class RAGEngine:
         # 1. 清空向量库
         try:
             self.vector_store.delete_collection()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[RAG] 删除向量集合失败: {e}")
         # 关闭 ChromaDB 客户端连接（释放 sqlite3 文件锁）
         if self._vector_store is not None:
             try:
                 self._vector_store._client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[RAG] 关闭 ChromaDB 连接失败: {e}")
         self._vector_store = None
 
         # 删除 chroma_db 物理文件（带重试，Windows 文件锁兼容）

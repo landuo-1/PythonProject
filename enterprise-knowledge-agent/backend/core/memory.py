@@ -252,56 +252,7 @@ class MemoryManager:
 - 如果用户表达了偏好，记录下来
 - 长度不超过200字"""
 
-    # ==================== 滑动窗口 ====================
-
-    def get_context_messages(self) -> List[Dict[str, Any]]:
-        """
-        获取上下文消息（滑动窗口策略）
-
-        策略：
-        - 消息数 < SUMMARY_THRESHOLD: 返回全部历史
-        - 消息数 >= SUMMARY_THRESHOLD:
-          1. 取前 N-MAX_RECENT_MESSAGES 条旧消息 → 生成摘要
-          2. 截断 conversation_history，保留最近消息 + 摘要
-          3. 返回 [摘要] + 最近消息
-
-        Returns:
-            上下文消息列表（用于传给 LLM）
-        """
-        if len(self.conversation_history) < self.SUMMARY_THRESHOLD:
-            return self.conversation_history
-
-        # 需要压缩（加锁防止并发触发多次压缩）
-        with self._compress_lock:
-            # 双重检查：获取锁后再次检查阈值（可能其他线程已完成压缩）
-            if len(self.conversation_history) < self.SUMMARY_THRESHOLD:
-                return self.conversation_history
-
-            split_point = len(self.conversation_history) - self.MAX_RECENT_MESSAGES
-            old_messages = self.conversation_history[:split_point]
-            recent_messages = self.conversation_history[split_point:]
-
-            logger.info(f"[MEMORY] 触发对话压缩: 总消息={len(self.conversation_history)}, 压缩={len(old_messages)}条, 保留={len(recent_messages)}条")
-
-            # 生成摘要
-            summary = self.summarize_messages(old_messages)
-
-            # 压缩成功后截断历史，避免下次重复压缩同一批旧消息
-            if summary:
-                summary_msg = {
-                    "role": "system",
-                    "content": f"[对话历史摘要] {summary}",
-                    "timestamp": datetime.now().isoformat(),
-                    "metadata": {"type": "summary"}
-                }
-                self.conversation_history = [summary_msg] + recent_messages
-                self.update_conversation_summary(summary)
-                logger.info(f"[MEMORY] 压缩完成: 摘要长度={len(summary)}, 历史截断至{len(self.conversation_history)}条")
-            else:
-                logger.warning("[MEMORY] 摘要生成为空，保留原始历史")
-
-        # 返回当前历史（已包含摘要）
-        return self.conversation_history
+    # ==================== Token 估算 ====================
 
     def get_token_count(self) -> int:
         """
@@ -400,18 +351,6 @@ class MemoryManager:
         """清空对话历史"""
         self.conversation_history = []
 
-    def clear_all_memory(self):
-        """清空所有记忆"""
-        self.conversation_history = []
-        self.long_term_memory = {
-            "user_preferences": {},
-            "knowledge_graph": {},
-            "conversation_summary": "",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }
-        self._save_long_term_memory()
-
     def get_memory_stats(self) -> Dict[str, Any]:
         """获取记忆统计信息"""
         return {
@@ -424,20 +363,3 @@ class MemoryManager:
             "estimated_tokens": self.get_token_count(),
             "last_updated": self.long_term_memory.get("updated_at")
         }
-
-    def export_memory(self) -> Dict[str, Any]:
-        """导出记忆数据"""
-        return {
-            "user_id": self.user_id,
-            "conversation_history": self.conversation_history,
-            "long_term_memory": self.long_term_memory,
-            "exported_at": datetime.now().isoformat()
-        }
-
-    def import_memory(self, data: Dict[str, Any]):
-        """导入记忆数据"""
-        if "conversation_history" in data:
-            self.conversation_history = data["conversation_history"]
-        if "long_term_memory" in data:
-            self.long_term_memory = data["long_term_memory"]
-            self._save_long_term_memory()

@@ -11,7 +11,29 @@ import logging
 import re
 from typing import Dict, Any
 
+from backend.utils.file_utils import normalize_filename as _normalize_filename
+
 logger = logging.getLogger(__name__)
+
+
+def _extract_keywords_jieba(text: str) -> set:
+    """使用 jieba 分词提取中文关键词，过滤停用词和单字"""
+    try:
+        import jieba
+        words = set(w for w in jieba.cut(text) if len(w) >= 2)
+    except ImportError:
+        # 降级到正则
+        words = set(re.findall(r'[一-鿿]{2,4}', text))
+
+    stop_words = {
+        '什么', '怎么', '如何', '请问', '可以', '能够', '需要', '为什么',
+        '哪些', '哪个', '进行', '办理', '关于', '问题', '情况', '规定',
+        '相关', '具体', '以下', '如下', '其中', '所有', '各种', '进行',
+        '我', '你', '他', '她', '它', '们', '的', '了', '是', '在',
+        '有', '和', '与', '或', '但', '而', '也', '都', '就', '才',
+        '到', '把', '被', '让', '给', '从', '向', '往', '以', '为',
+    }
+    return words - stop_words
 
 
 class QualityEvaluator:
@@ -29,35 +51,32 @@ class QualityEvaluator:
             cls._instance = cls()
         return cls._instance
 
-    def preload(self):
-        """兼容接口（轻量评估无需预加载）"""
-        logger.info("[Eval] 轻量评估器，无需预加载模型")
-
     # ==================== 忠实度评估 ====================
 
     def _extract_cited_sources(self, answer: str) -> set:
-        """从回答中提取引用的来源（文件名+片段号）"""
+        """从回答中提取引用的来源（文件名+片段号，文件名归一化）"""
         cited = set()
         # 匹配 《文件名——片段N》
         for match in re.finditer(r'《(.+?)——片段\s*(\d+)》', answer):
-            cited.add((match.group(1).strip(), int(match.group(2))))
+            fname = _normalize_filename(match.group(1).strip())
+            idx = int(match.group(2))
+            cited.add((fname, idx))
         return cited
 
     def _extract_available_sources(self, chunks: list) -> set:
-        """从检索结果中提取可用的来源"""
+        """从检索结果中提取可用的来源（文件名归一化）"""
         available = set()
         for c in chunks:
             fname = c.get("filename", "")
             idx = c.get("index", 0)
             if fname:
-                available.add((fname, idx))
+                available.add((_normalize_filename(fname), idx))
         return available
 
     def _check_keyword_overlap(self, answer: str, context: str) -> float:
-        """检查回答与上下文的关键词重叠度"""
-        # 提取中文关键词（2-4字）
-        answer_words = set(re.findall(r'[一-鿿]{2,4}', answer))
-        context_words = set(re.findall(r'[一-鿿]{2,4}', context))
+        """检查回答与上下文的关键词重叠度（使用 jieba 分词）"""
+        answer_words = _extract_keywords_jieba(answer)
+        context_words = _extract_keywords_jieba(context)
 
         if not answer_words:
             return 0.0
@@ -112,27 +131,66 @@ class QualityEvaluator:
 
     # ==================== 答案相关性评估 ====================
 
+    # 复合问题分隔词
+    _COMPOUND_SEPARATORS = ['以及', '并且', '另外', '同时', '还有', '并且还', '，还']
+
+    def _split_compound_question(self, question: str) -> list:
+        """将复合问题拆分为子问题"""
+        # 尝试用分隔词拆分
+        parts = [question]
+        for sep in self._COMPOUND_SEPARATORS:
+            new_parts = []
+            for part in parts:
+                new_parts.extend([p.strip() for p in part.split(sep) if p.strip()])
+            parts = new_parts
+        return parts
+
+    def _extract_keywords(self, text: str) -> set:
+        """提取中文关键词（使用 jieba 分词），过滤停用词"""
+        return _extract_keywords_jieba(text)
+
     def evaluate_answer_relevancy(self, question: str, answer: str) -> Dict[str, Any]:
         """
         答案相关性评估（规则检查）
 
-        检查回答是否包含问题中的关键术语。
+        对复合问题（含"以及"、"并且"等）拆分为子问题分别检查，
+        每个子问题独立评分，取平均分。
         """
         if not question or not answer:
             return {"score": 1.0, "passed": True}
 
-        # 提取问题中的关键术语
-        question_terms = set(re.findall(r'[一-鿿]{2,6}', question))
-        # 过滤停用词
-        stop_words = {'什么', '怎么', '如何', '请问', '可以', '能够', '需要', '为什么', '哪些', '哪个'}
-        question_terms -= stop_words
+        # 拆分复合问题
+        sub_questions = self._split_compound_question(question)
 
-        if not question_terms:
-            return {"score": 1.0, "passed": True}
+        if len(sub_questions) <= 1:
+            # 单一问题，直接检查
+            question_terms = self._extract_keywords(question)
+            if not question_terms:
+                return {"score": 1.0, "passed": True}
+            matched = sum(1 for term in question_terms if term in answer)
+            score = matched / len(question_terms)
+        else:
+            # 复合问题，每个子问题独立评分
+            sub_scores = []
+            all_terms_info = []
+            for sub_q in sub_questions:
+                sub_terms = self._extract_keywords(sub_q)
+                if not sub_terms:
+                    sub_scores.append(1.0)
+                    continue
+                matched = sum(1 for term in sub_terms if term in answer)
+                sub_score = matched / len(sub_terms)
+                sub_scores.append(sub_score)
+                all_terms_info.append({
+                    "sub_q": sub_q[:30],
+                    "terms": sub_terms,
+                    "matched": [t for t in sub_terms if t in answer],
+                    "score": round(sub_score, 3),
+                })
 
-        # 检查回答中是否包含问题术语
-        matched = sum(1 for term in question_terms if term in answer)
-        score = matched / len(question_terms)
+            # 平均分，但任何一个子问题得分 < 0.3 视为该部分缺失
+            score = sum(sub_scores) / len(sub_scores) if sub_scores else 0.0
+            logger.debug(f"[Eval] 复合问题拆分: {all_terms_info}, 平均分={score:.3f}")
 
         return {
             "score": round(score, 3),

@@ -11,34 +11,39 @@ router = APIRouter(prefix="/api/knowledge-base", tags=["知识库管理"])
 from backend.api.chat import get_agent
 
 
-@router.get("/system/status", response_model=SystemStatus)
+@router.get(
+    "/system/status",
+    response_model=SystemStatus,
+    summary="系统状态",
+    description="获取系统各组件的运行状态（轻量级检查，不创建重型实例）。"
+                "\n\n**检查组件：** LLM、RAG、Memory、Workflow",
+    responses={
+        200: {"description": "返回系统状态"},
+        500: {"description": "获取状态失败"},
+    }
+)
 async def get_system_status():
-    """获取系统状态（轻量级检查，不创建重型实例）"""
     try:
         components = {}
 
-        # 检查 LLM 模块是否可导入
         try:
             from backend.core.llm import get_mimo_llm
             components["llm"] = "正常"
         except Exception as e:
             components["llm"] = f"异常: {str(e)}"
 
-        # 检查 RAG 模块是否可导入
         try:
             from backend.core.rag import RAGEngine
             components["rag"] = "正常"
         except Exception as e:
             components["rag"] = f"异常: {str(e)}"
 
-        # 检查记忆模块是否可导入
         try:
             from backend.core.memory import MemoryManager
             components["memory"] = "正常"
         except Exception as e:
             components["memory"] = f"异常: {str(e)}"
 
-        # 检查工作流模块是否可导入
         try:
             from backend.core.agent import EnterpriseAgent
             components["workflow"] = "正常"
@@ -57,13 +62,21 @@ async def get_system_status():
         raise HTTPException(status_code=500, detail=f"获取系统状态失败: {str(e)}")
 
 
-@router.delete("/my-documents")
+@router.delete(
+    "/my-documents",
+    summary="清空我的文档",
+    description="清空当前用户上传的所有文档（个人工作区 + 团队共享库）。"
+                "\n\n**注意：** 此操作不可恢复，会同时清理向量库、BM25 索引和磁盘文件。",
+    responses={
+        200: {"description": "清空成功，返回删除的片段数"},
+        401: {"description": "未认证或 Token 过期"},
+        500: {"description": "清空失败"},
+    }
+)
 async def clear_my_documents(user_id: str = Depends(get_current_user)):
-    """清空当前用户的所有文档（需要登录）"""
     try:
         agent = get_agent(user_id)
         deleted_count = agent.rag_engine.clear_user_documents(user_id)
-        # 同步清理对话摘要，防止 LLM 从历史中引用已删除的文档
         agent.memory_manager.update_conversation_summary("")
 
         return {
@@ -75,9 +88,18 @@ async def clear_my_documents(user_id: str = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"清空文档失败: {str(e)}")
 
 
-@router.get("/my-info", response_model=KnowledgeBaseInfo)
+@router.get(
+    "/my-info",
+    response_model=KnowledgeBaseInfo,
+    summary="知识库信息",
+    description="获取当前用户的知识库统计信息，包括文档数量和记忆统计。",
+    responses={
+        200: {"description": "返回知识库信息"},
+        401: {"description": "未认证或 Token 过期"},
+        500: {"description": "获取信息失败"},
+    }
+)
 async def get_my_knowledge_base_info(user_id: str = Depends(get_current_user)):
-    """获取当前用户的知识库信息（需要登录）"""
     try:
         agent = get_agent(user_id)
         info = agent.get_knowledge_base_info()

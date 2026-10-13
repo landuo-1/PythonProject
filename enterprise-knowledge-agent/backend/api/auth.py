@@ -14,8 +14,8 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 
 class RegisterRequest(BaseModel):
     """注册请求"""
-    user_id: str = Field(..., min_length=2, max_length=20, description="用户ID")
-    password: str = Field(..., min_length=4, max_length=50, description="密码")
+    user_id: str = Field(..., min_length=2, max_length=20, description="用户ID，2-20个字符")
+    password: str = Field(..., min_length=4, max_length=50, description="密码，至少4个字符")
 
 
 class LoginRequest(BaseModel):
@@ -26,21 +26,28 @@ class LoginRequest(BaseModel):
 
 class AuthResponse(BaseModel):
     """认证响应"""
-    success: bool
-    message: str
-    token: Optional[str] = None
-    user_id: Optional[str] = None
+    success: bool = Field(..., description="是否成功")
+    message: str = Field(..., description="响应消息")
+    token: Optional[str] = Field(None, description="JWT Token（成功时返回）")
+    user_id: Optional[str] = Field(None, description="用户ID（成功时返回）")
 
 
-@router.post("/register", response_model=AuthResponse)
+@router.post(
+    "/register",
+    response_model=AuthResponse,
+    summary="用户注册",
+    description="注册新用户并自动登录。用户ID需2-20字符，密码至少4字符。注册成功后自动返回JWT Token。",
+    responses={
+        200: {"description": "注册成功，返回 Token"},
+        400: {"description": "用户ID已存在或参数不合法"},
+    }
+)
 async def register(request: RegisterRequest):
-    """用户注册"""
     success, message = register_user(request.user_id, request.password)
 
     if not success:
         raise HTTPException(status_code=400, detail=message)
 
-    # 注册成功后自动登录
     token = authenticate_user(request.user_id, request.password)
 
     return AuthResponse(
@@ -51,9 +58,17 @@ async def register(request: RegisterRequest):
     )
 
 
-@router.post("/login", response_model=AuthResponse)
+@router.post(
+    "/login",
+    response_model=AuthResponse,
+    summary="用户登录",
+    description="使用用户ID和密码登录，成功则返回JWT Token（有效期24小时）。",
+    responses={
+        200: {"description": "登录成功，返回 Token"},
+        401: {"description": "用户ID或密码错误"},
+    }
+)
 async def login(request: LoginRequest):
-    """用户登录"""
     token = authenticate_user(request.user_id, request.password)
 
     if token is None:
@@ -86,11 +101,9 @@ async def get_current_user(
     """
     token = None
 
-    # 优先从 HTTPBearer 获取
     if credentials is not None:
         token = credentials.credentials
 
-    # 回退：手动解析 Authorization 头
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):

@@ -32,6 +32,7 @@ def search_web(query: str) -> str:
         import concurrent.futures
 
         if not os.environ.get("TAVILY_API_KEY"):
+            logger.warning("[TOOL] Tavily API Key 未配置")
             return "搜索功能不可用：未配置 Tavily API Key"
 
         # 根据查询关键词判断时效性需求
@@ -80,6 +81,8 @@ def search_web(query: str) -> str:
         return "\n\n".join(formatted_results)
 
     except ImportError:
+        logger.error("[TOOL] langchain-tavily 未安装")
         return "搜索功能不可用：请安装 langchain-tavily"
     except Exception as e:
+        logger.error(f"[TOOL] 搜索异常: {e}")
         return f"搜索失败: {str(e)}"

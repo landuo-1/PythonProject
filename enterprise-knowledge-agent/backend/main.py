@@ -98,11 +98,28 @@ security_scheme = HTTPBearer(
 # 创建FastAPI应用
 app = FastAPI(
     title="企业智能知识库Agent API",
-    description="基于RAG+Agent架构的企业知识库问答系统",
+    description=(
+        "基于 LangGraph 自纠错工作流 + RAG 混合检索的企业知识库问答系统\n\n"
+        "## 主要功能\n"
+        "- **智能问答**：基于企业文档的 RAG 检索问答\n"
+        "- **混合检索**：向量检索 + BM25 关键词检索 + RRF 融合排序\n"
+        "- **质量评估**：忠实度 + 答案相关性，不达标自动重检索重生成\n"
+        "- **多用户隔离**：JWT 认证 + 个人工作区/团队共享库\n"
+        "- **流式对话**：SSE 流式推送，支持客户端断开检测\n\n"
+        "## 认证方式\n"
+        "使用 `/api/auth/login` 获取 JWT Token，然后点击右上角 **Authorize** 按钮输入 Token。\n"
+        "如果 Token 无效或过期，所有需要认证的接口都会返回 401 。"
+    ),
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    lifespan=lifespan
+    lifespan=lifespan,
+    openapi_tags=[
+        {"name": "认证", "description": "用户注册和登录"},
+        {"name": "聊天", "description": "流式对话和对话历史管理"},
+        {"name": "文档管理", "description": "文档上传、列表、删除和内容预览"},
+        {"name": "知识库管理", "description": "系统状态、知识库信息和清空操作"},
+    ]
 )
 
 # 配置CORS

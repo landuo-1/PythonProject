@@ -14,6 +14,31 @@ from backend.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def normalize_filename(fname: str) -> str:
+    """
+    归一化文件名：去扩展名、时间戳前缀、空白
+
+    用于来源引用匹配和去重。
+    例: "20260721_174244_退费指南.pdf" → "退费指南"
+
+    Args:
+        fname: 原始文件名
+
+    Returns:
+        归一化后的文件名
+    """
+    import re
+    name = fname.strip()
+    # 去除常见扩展名
+    for ext in ('.pdf', '.docx', '.doc', '.txt', '.xlsx', '.xls', '.csv'):
+        if name.lower().endswith(ext):
+            name = name[:-len(ext)]
+            break
+    # 去除时间戳前缀（如 20260721_174244_）
+    name = re.sub(r'^\d{8}_\d{6}_', '', name)
+    return name.strip()
+
+
 def compute_file_hash(data: bytes) -> str:
     """
     计算文件内容的 MD5 哈希值（用于内容级去重）

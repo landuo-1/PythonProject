@@ -21,8 +21,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 自定义CSS
-st.markdown("""
+# 自定义CSS + JS（小标题样式增强）
+st.markdown(r"""
 <style>
     .main-header {
         font-size: 2rem;
@@ -36,11 +36,49 @@ st.markdown("""
         color: #666;
         margin-bottom: 2rem;
     }
-    /* 隐藏 Markdown 标题的锚点链接图标 */
     .stMarkdown a[href^="#"] {
         display: none !important;
     }
+    /* 小标题 class 由 JS 动态添加 */
+    .chat-subtitle {
+        font-size: 1.25em !important;
+        color: #1a1a1a !important;
+        font-weight: 700 !important;
+        display: block;
+        margin-top: 0.5em !important;
+        margin-bottom: 0.2em !important;
+    }
+    /* 行内加粗 */
+    .stChatMessage .stMarkdown p strong {
+        color: #1a1a1a;
+        font-weight: 600;
+    }
+    /* 来源标注 */
+    .stChatMessage .stMarkdown em {
+        color: #5f6368;
+        font-size: 0.9em;
+    }
 </style>
+<script>
+// 检测小标题：独占一段且以数字开头的加粗文本
+function styleSubtitles() {
+    document.querySelectorAll('.stChatMessage .stMarkdown p').forEach(p => {
+        const children = p.childNodes;
+        // 只有一个子节点且是 <strong>
+        if (children.length === 1 && children[0].nodeName === 'STRONG') {
+            const text = children[0].textContent.trim();
+            // 匹配 "1. xxx" 或 "1、xxx" 格式
+            if (/^\d+[\.\、]/.test(text)) {
+                children[0].classList.add('chat-subtitle');
+            }
+        }
+    });
+}
+// MutationObserver 监听 DOM 变化
+const observer = new MutationObserver(styleSubtitles);
+observer.observe(document.body, { childList: true, subtree: true });
+styleSubtitles();
+</script>
 """, unsafe_allow_html=True)
 
 

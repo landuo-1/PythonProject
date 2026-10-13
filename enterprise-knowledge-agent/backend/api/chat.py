@@ -84,16 +84,24 @@ def get_agent(user_id: str = "default", web_search: bool = False) -> EnterpriseA
         return agent
 
 
-@router.post("/stream")
+@router.post(
+    "/stream",
+    summary="流式对话",
+    description="通过 SSE（Server-Sent Events）协议流式返回 Agent 回答。支持客户端断开检测和优雅取消。"
+                "\n\n**SSE 事件类型：**"
+                "\n- `sources`：参考来源和检索片段"
+                "\n- `tool_call`：工具调用开始"
+                "\n- `tool_result`：工具调用结果"
+                "\n- `chunk`：回答文本片段"
+                "\n- `evaluation`：质量评估结果（需开启 EVAL_ENABLED）"
+                "\n- `[DONE]`：流式结束标记",
+    responses={
+        200: {"description": "SSE 流式响应", "content": {"text/event-stream": {}}},
+        401: {"description": "未认证或 Token 过期"},
+        500: {"description": "流式对话失败"},
+    }
+)
 async def chat_stream(request: Request, chat_req: ChatRequest, user_id: str = Depends(get_current_user)):
-    """流式对话（需要登录）- 支持客户端断开检测和优雅取消
-
-    当客户端关闭浏览器、刷新页面或中断网络时：
-    1. generate() 的 asyncio 任务被取消或超时检测到断开
-    2. stop_event 被设置，通知后台线程停止 LLM 生成
-    3. 后台线程在下一个 chunk 检查到停止信号，退出循环
-    4. 中断时不保存记忆（避免保存不完整的回答）
-    """
     try:
         agent = get_agent(user_id, web_search=chat_req.web_search)
         logger.info(f"[CHAT] user={user_id}, web_search={chat_req.web_search}")
@@ -160,9 +168,17 @@ async def chat_stream(request: Request, chat_req: ChatRequest, user_id: str = De
         raise HTTPException(status_code=500, detail=f"流式对话失败: {str(e)}")
 
 
-@router.get("/history", response_model=ConversationHistory)
+@router.get(
+    "/history",
+    response_model=ConversationHistory,
+    summary="获取对话历史",
+    description="获取当前用户的对话历史记录，按时间正序返回。",
+    responses={
+        200: {"description": "返回对话历史"},
+        401: {"description": "未认证或 Token 过期"},
+    }
+)
 async def get_conversation_history(max_messages: int = 20, user_id: str = Depends(get_current_user)):
-    """获取对话历史（需要登录）"""
     try:
         agent = get_agent(user_id)
         history = agent.memory_manager.get_conversation_history(max_messages)
@@ -175,9 +191,17 @@ async def get_conversation_history(max_messages: int = 20, user_id: str = Depend
         raise HTTPException(status_code=500, detail=f"获取对话历史失败: {str(e)}")
 
 
-@router.delete("/history")
+@router.delete(
+    "/history",
+    summary="清空对话历史",
+    description="清空当前用户的所有对话历史和对话摘要。清空后不可恢复。",
+    responses={
+        200: {"description": "清空成功"},
+        401: {"description": "未认证或 Token 过期"},
+        500: {"description": "清空失败"},
+    }
+)
 async def clear_conversation_history(user_id: str = Depends(get_current_user)):
-    """清空对话历史（需要登录）"""
     try:
         agent = get_agent(user_id)
         agent.clear_conversation()
@@ -186,9 +210,16 @@ async def clear_conversation_history(user_id: str = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"清空对话历史失败: {str(e)}")
 
 
-@router.get("/agents")
+@router.get(
+    "/agents",
+    summary="列出 Agent 实例",
+    description="列出当前所有活跃的 Agent 实例（调试用）。每个用户有独立的 Agent 实例，TTL 1小时自动回收。",
+    responses={
+        200: {"description": "返回活跃 Agent 列表"},
+        401: {"description": "未认证或 Token 过期"},
+    }
+)
 async def list_agents(user_id: str = Depends(get_current_user)):
-    """列出所有Agent实例（需要登录）"""
     with _agents_lock:
         return {
             "agents": list(_agents.keys()),

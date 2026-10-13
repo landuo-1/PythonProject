@@ -23,21 +23,30 @@ def _sanitize_user_id(user_id: str) -> str:
 from backend.api.chat import get_agent
 
 
-@router.post("/upload", response_model=DocumentUploadResponse)
+@router.post(
+    "/upload",
+    response_model=DocumentUploadResponse,
+    summary="上传文档",
+    description="上传文档到知识库。支持两阶段去重：① MD5 哈希精确匹配（内容相同直接跳过）② 文件名匹配（同名不同内容提示替换）。"
+                "\n\n**支持格式：** PDF、Word (.docx/.doc)、TXT、Excel (.xlsx/.xls)、CSV"
+                "\n\n**去重逻辑：**"
+                "\n- 内容完全相同 → 自动跳过"
+                "\n- 同名不同内容 + replace=false → 提示已存在"
+                "\n- 同名不同内容 + replace=true + 是原上传者 → 替换成功"
+                "\n- 同名不同内容 + replace=true + 非原上传者 → 无权替换",
+    responses={
+        200: {"description": "上传成功或去重跳过"},
+        400: {"description": "文件格式不支持或大小超限"},
+        401: {"description": "未认证或 Token 过期"},
+        500: {"description": "上传失败"},
+    }
+)
 async def upload_document(
-    file: UploadFile = File(...),
-    visibility: str = Form("private"),
-    replace: bool = Form(False),
+    file: UploadFile = File(..., description="上传的文件"),
+    visibility: str = Form("private", description="可见性：private（个人工作区）或 public（团队共享库）"),
+    replace: bool = Form(False, description="是否替换已存在的同名文档"),
     user_id: str = Depends(get_current_user)
 ):
-    """
-    上传文档到知识库（自动去重，支持替换，需要登录）
-
-    Args:
-        file: 上传的文件
-        visibility: 可见性 - "private"(个人工作区) / "public"(团队共享库)
-        replace: 是否替换已存在的同名文档（默认 False）
-    """
     try:
         user_id = _sanitize_user_id(user_id)
 
@@ -110,8 +119,8 @@ async def upload_document(
                     for f in list_files(upload_dir):
                         if f["name"].endswith(file.filename):
                             delete_file(f["path"])
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[API] 删除旧文件失败: {e}")
             else:
                 # 非替换模式：返回提示
                 scope_name = "个人工作区" if visibility == "private" else "团队共享库"
@@ -157,17 +166,23 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"文档上传失败: {str(e)}")
 
 
-@router.get("/list")
+@router.get(
+    "/list",
+    summary="列出文档",
+    description="列出当前用户可见的文档列表。"
+                "\n\n**可见性过滤：**"
+                "\n- `private`：仅自己的私有文档"
+                "\n- `public`：所有人的公开文档"
+                "\n- 空字符串：自己的私有 + 所有人的公开（按 filename+visibility+owner 去重）",
+    responses={
+        200: {"description": "返回文档列表"},
+        401: {"description": "未认证或 Token 过期"},
+    }
+)
 async def list_documents(
     visibility: str = "",
     user_id: str = Depends(get_current_user)
 ):
-    """
-    列出用户知识库中的文档（需要登录）
-
-    Args:
-        visibility: 过滤可见性 - "private"(仅自己的私有) / "public"(所有人的公开) / 空(自己的私有+所有公开)
-    """
     try:
         agent = get_agent(user_id)
 
@@ -201,15 +216,21 @@ async def list_documents(
         raise HTTPException(status_code=500, detail=f"获取文档列表失败: {str(e)}")
 
 
-@router.get("/content/{filename}")
+@router.get(
+    "/content/{filename}",
+    summary="获取文档内容",
+    description="获取指定文档的所有内容片段，用于前端预览。"
+                "\n\n**可见性过滤：**"
+                "\n- `private`：仅自己的私有文档"
+                "\n- `public`：仅公开文档"
+                "\n- 空字符串：合并两者",
+    responses={
+        200: {"description": "返回文档片段列表"},
+        401: {"description": "未认证或 Token 过期"},
+        404: {"description": "文档不存在"},
+    }
+)
 async def get_document_content(filename: str, visibility: str = "", user_id: str = Depends(get_current_user)):
-    """
-    获取指定文档的内容片段（需要登录）
-
-    Args:
-        filename: 文档文件名
-        visibility: 可见性过滤 - "private"(仅自己的私有) / "public"(仅公开) / 空(合并两者)
-    """
     try:
         agent = get_agent(user_id)
         store = agent.rag_engine.vector_store
@@ -278,14 +299,22 @@ async def get_document_content(filename: str, visibility: str = "", user_id: str
         raise HTTPException(status_code=500, detail=f"获取文档内容失败: {str(e)}")
 
 
-@router.delete("/{filename}")
+@router.delete(
+    "/{filename}",
+    summary="删除文档",
+    description="删除指定文档。同时清理向量库、BM25 索引和磁盘文件。"
+                "\n\n**权限规则：**只能删除自己上传的文档。"
+                "\n\n**可见性过滤：**"
+                "\n- `private`：删除自己的私有文档"
+                "\n- `public`：删除自己的公开文档"
+                "\n- 空字符串：删除所有匹配的文档",
+    responses={
+        200: {"description": "删除成功"},
+        401: {"description": "未认证或 Token 过期"},
+        500: {"description": "删除失败"},
+    }
+)
 async def delete_document(filename: str, visibility: str = "", user_id: str = Depends(get_current_user)):
-    """
-    删除文档（需要登录）
-
-    Args:
-        visibility: 过滤可见性 - "private" / "public" / 空(删所有匹配的)
-    """
     try:
         agent = get_agent(user_id)
 
@@ -302,8 +331,8 @@ async def delete_document(filename: str, visibility: str = "", user_id: str = De
                 fpath = meta.get("file_path", "")
                 if fpath:
                     file_paths_to_delete.add(fpath)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[API] 查询文件路径失败: {e}")
 
         # 从向量库和 BM25 中删除（按 original_filename + owner + visibility 精确过滤）
         deleted_from_store = agent.rag_engine.delete_document(
@@ -329,14 +358,22 @@ async def delete_document(filename: str, visibility: str = "", user_id: str = De
         raise HTTPException(status_code=500, detail=f"删除文档失败: {str(e)}")
 
 
-@router.post("/batch-upload")
+@router.post(
+    "/batch-upload",
+    summary="批量上传文档",
+    description="一次上传多个文档。每个文件独立去重和错误处理，单个文件失败不影响其他文件。",
+    responses={
+        200: {"description": "返回每个文件的上传结果"},
+        401: {"description": "未认证或 Token 过期"},
+        500: {"description": "批量上传失败"},
+    }
+)
 async def batch_upload_documents(
-    files: List[UploadFile] = File(...),
-    visibility: str = Form("private"),
-    replace: bool = Form(False),
+    files: List[UploadFile] = File(..., description="上传的文件列表"),
+    visibility: str = Form("private", description="可见性：private 或 public"),
+    replace: bool = Form(False, description="是否替换已存在的同名文档"),
     user_id: str = Depends(get_current_user)
 ):
-    """批量上传文档（自动去重，支持替换，需要登录）"""
     try:
         user_id = _sanitize_user_id(user_id)
         results = []

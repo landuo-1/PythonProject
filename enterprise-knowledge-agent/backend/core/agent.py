@@ -37,6 +37,7 @@ class AgentState(TypedDict):
     prompt: str
     response: str           # LLM 生成的回答
     eval_result: dict       # 评估结果
+    eval_feedback: str      # 评估反馈（重试时传给 LLM）
     attempt: int            # 当前尝试次数
     needs_retry: bool       # 是否需要重试
     web_search_enabled: bool
@@ -107,17 +108,20 @@ class IntentRouter:
                         return r
 
                 logger.warning(f"[Router] LLM返回无效: {route}, 降级到规则分类")
-                return cls._rule_classify(msg)
+                return cls._rule_classify(msg, web_search_enabled)
             except Exception as e:
                 logger.error(f"[Router] LLM分类失败: {e}, 降级到规则分类")
-                return cls._rule_classify(msg)
+                return cls._rule_classify(msg, web_search_enabled)
 
         return "internal"
 
     @classmethod
-    def _rule_classify(cls, msg: str) -> str:
+    def _rule_classify(cls, msg: str, web_search_enabled: bool = False) -> str:
         if any(kw in msg for kw in cls.EXTERNAL_KEYWORDS):
-            return "external"
+            if web_search_enabled:
+                return "external"
+            else:
+                return "external_disabled"
         if re.search(r'(搜索|查找|搜一下|找一下|帮我查|帮我搜|网上查)', msg):
             return "internal_first"
         if re.match(r'^(你好|hi|hello|谢谢|再见)$', msg, re.IGNORECASE):
@@ -142,7 +146,7 @@ def _create_node_fns(llm, rag_engine: RAGEngine, memory_manager: MemoryManager):
         from langchain_core.messages import HumanMessage, SystemMessage
         message = state["message"]
         history = memory_manager.get_langchain_messages(max_messages=6)
-        messages = [SystemMessage(content="你是一个友好的企业知识库助手。请简洁、友好地回复。")] + history + [HumanMessage(content=message)]
+        messages = [SystemMessage(content="你是一个友好的企业知识库助手。请简洁、友好地回复。使用 **加粗** 标注关键信息。")] + history + [HumanMessage(content=message)]
         response = llm.invoke(messages)
         content = response.content or "你好！"
         return {"response": content, "sources": [], "chunks": []}
@@ -176,24 +180,35 @@ def _create_node_fns(llm, rag_engine: RAGEngine, memory_manager: MemoryManager):
         route = state.get("route", "internal")
         prompt = state.get("prompt", "")
         context = state.get("context", "")
+        eval_feedback = state.get("eval_feedback", "")
+        attempt = state.get("attempt", 0)
 
         if route == "general":
-            system_prompt = "你是一个友好的企业知识库助手。请简洁、友好地回复。"
+            system_prompt = "你是一个友好的企业知识库助手。请简洁、友好地回复。使用 **加粗** 标注关键信息。"
         else:
             system_prompt = prompt
 
         if not system_prompt:
             return {"response": ""}
 
-        history = memory_manager.get_langchain_messages(max_messages=6)
+        # 知识库为空时，直接返回固定消息，不调用 LLM（防止幻觉）
         if route in ("internal", "internal_first") and not context:
-            history = _filter_history_for_empty_kb(history)
+            content = "知识库中暂无相关内容，建议先上传相关文档后再提问。"
+            logger.info(f"[Generate] 知识库为空，跳过 LLM，返回固定消息")
+            return {"response": content}
 
-        messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=message)]
+        # 重试时，将反馈信息追加到用户消息中
+        user_message = message
+        if eval_feedback and attempt > 0:
+            user_message = f"{message}\n\n【修正提示】你上一次的回答存在问题：{eval_feedback}\n请根据以上提示重新回答，确保只使用检索结果中的内容。"
+            logger.info(f"[Generate] 重试 attempt={attempt}, 追加反馈: {eval_feedback[:50]}...")
+
+        history = memory_manager.get_langchain_messages(max_messages=6)
+        messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=user_message)]
         response = llm.invoke(messages)
         content = _clean_response(response.content or "抱歉，我无法处理您的请求。")
 
-        logger.info(f"[Generate] route={route}, response_len={len(content)}")
+        logger.info(f"[Generate] route={route}, attempt={attempt}, response_len={len(content)}")
         return {"response": content}
 
     def evaluate_node(state: AgentState) -> dict:
@@ -231,12 +246,33 @@ def _create_node_fns(llm, rag_engine: RAGEngine, memory_manager: MemoryManager):
                           and attempt < 1
                           and settings.EVAL_DEGRADATION_STRATEGY == "retry")
 
+            # 生成具体的反馈信息，告诉 LLM 上一次哪里出了问题
+            feedback = ""
             if needs_retry:
-                logger.warning(f"[Evaluate] attempt={attempt}, 未达标，触发重检索重生成")
+                feedback_parts = []
+                faith = eval_result.get("faithfulness", {})
+                relev = eval_result.get("relevancy", {})
+
+                if not faith.get("passed", True):
+                    checks = faith.get("checks", {})
+                    valid = checks.get("valid_cited", 0)
+                    total = checks.get("total_cited", 0)
+                    if total > 0 and valid == 0:
+                        feedback_parts.append("你引用的来源在检索结果中不存在，请只使用检索结果中实际出现的文件名和片段编号")
+                    elif total > 0 and valid < total:
+                        feedback_parts.append(f"你引用了{total}个来源，但只有{valid}个真实存在，请检查文件名和片段编号是否与检索结果完全一致")
+                    else:
+                        feedback_parts.append("你的回答中有内容无法从检索结果中找到依据，请只回答检索结果中明确包含的信息")
+
+                if not relev.get("passed", True):
+                    feedback_parts.append("你的回答没有涵盖问题中的关键信息，请确保回答直接针对用户的问题")
+
+                feedback = "；".join(feedback_parts)
+                logger.warning(f"[Evaluate] attempt={attempt}, 未达标，反馈: {feedback}")
             else:
                 logger.info(f"[Evaluate] attempt={attempt}, passed={eval_result['overall_passed']}")
 
-            return {"eval_result": eval_result, "needs_retry": needs_retry, "attempt": attempt + 1}
+            return {"eval_result": eval_result, "eval_feedback": feedback, "needs_retry": needs_retry, "attempt": attempt + 1}
 
         except Exception as e:
             logger.error(f"[Evaluate] 评估异常: {e}")
@@ -341,20 +377,43 @@ def create_agent_workflow(llm, rag_engine: RAGEngine, memory_manager: MemoryMana
 # ==================== 共用工具函数 ====================
 
 def _build_internal_prompt(context: str, memory) -> str:
-    base = """你是企业知识库助手。回答要完整、详细，用分点格式组织。
+    if not context:
+        return """你是企业知识库助手。
 
-回答要求：
-- 只基于知识库检索结果中实际引用的内容回答，不要编造
-- 引用来源时，必须使用检索结果中给出的精确格式：📚 来源：《文件名——片段N》
-- 片段编号N必须是检索结果中实际存在的编号，不要编造不存在的片段号
-- 只标注你实际使用的来源，不要列出所有检索结果
-- 不要输出 JSON、工具调用代码或技术格式的内容
-- 如果知识库中没有相关信息，如实告知用户"""
+【重要】当前知识库为空，没有找到任何相关文档。
+你必须只回复以下内容，不要编造任何信息、不要引用任何来源、不要生成详细回答：
 
-    if context:
-        base += f"\n\n## 知识库检索结果\n{context}\n\n请基于以上内容回答。引用来源时使用精确的片段编号。"
-    else:
-        base += "\n\n当前知识库为空或未找到相关信息。请直接告知用户：知识库中暂无相关内容，建议上传相关文档后再提问。"
+"知识库中暂无相关内容，建议先上传相关文档后再提问。"
+
+不要添加任何其他内容。"""
+
+    base = """你是企业知识库助手。
+
+【严格规则 - 必须遵守】
+1. 只使用下方「知识库检索结果」中的内容回答，不要使用你的通用知识
+2. 引用来源时，必须原样复制检索结果中的文件名（包括扩展名），格式：📚 来源：《文件名——片段N》
+3. 不要编造、修改或缩写文件名，必须与检索结果中的名称完全一致
+4. 片段编号N必须是检索结果中实际存在的编号
+5. 如果检索结果中没有与问题直接相关的内容，直接回复"知识库中暂无相关内容"，不要编造回答
+6. 不要输出 JSON、工具调用代码或技术格式
+
+【回答格式 - 统一风格】
+- 不要使用 Markdown 标题语法（#、##、###）
+- 使用数字编号分点：1. 2. 3.
+- 每个要点的小标题单独一行并加粗，格式：**1. 标题名称**
+- 标题下方换行写说明内容，关键术语用 **加粗** 标注
+- 来源标注放在每个要点末尾，格式：📚 来源：《文件名——片段N》
+- 要点之间空一行分隔
+- 回答完毕后不要添加总结或客套话
+
+【回答示例】
+**1. 退费地点**
+携带相关材料到**后勤服务中心**办理退费手续。📚 来源：《退费指南——片段1》
+
+**2. 所需材料**
+需要准备**缴费凭证**、**身份证原件**及复印件。📚 来源：《退费指南——片段2》"""
+
+    base += f"\n\n## 知识库检索结果\n{context}\n\n请严格基于以上检索结果回答。引用来源时必须使用检索结果中的完整文件名。"
 
     memory_context = memory.get_memory_context_for_prompt()
     if memory_context:
@@ -370,6 +429,7 @@ def _build_external_prompt(search_result: str) -> str:
 
 ## 回答要求
 - 基于搜索结果回答，用分点格式组织
+- 小标题用 **加粗** 格式，关键术语用 **加粗** 标注
 - 标注信息来源（搜索结果中的链接）
 - 不要输出 JSON 或技术格式的内容
 - 以下为外部网络信息，仅供参考"""
@@ -440,66 +500,54 @@ def _enhance_query(original_query: str, failed_response: str, llm) -> str:
     return original_query
 
 
-def _filter_history_for_empty_kb(history_messages: list) -> list:
-    """过滤历史中知识库相关的消息（当知识库为空时使用）"""
-    from langchain_core.messages import AIMessage, HumanMessage
-
-    if not history_messages:
-        return history_messages
-
-    filtered = []
-    skip_next = False
-    for msg in history_messages:
-        if skip_next:
-            skip_next = False
-            continue
-
-        content = msg.content if msg.content else ""
-
-        if isinstance(msg, AIMessage) and "来源" in content and ("《" in content or "片段" in content):
-            skip_next = True
-            continue
-
-        filtered.append(msg)
-
-    if len(history_messages) != len(filtered) and len(filtered) > 2:
-        return filtered[-2:]
-    return filtered
+def _normalize_filename(fname: str) -> str:
+    """标准化文件名：去除扩展名、时间戳前缀、空白（统一实现）"""
+    from backend.utils.file_utils import normalize_filename
+    return normalize_filename(fname)
 
 
 def _filter_cited_sources(response: str, sources: list, chunks: list) -> tuple:
-    """根据 LLM 回答内容，精确过滤出被引用的来源和片段"""
+    """根据 LLM 回答内容，过滤出被引用的来源和片段（支持文件名模糊匹配）"""
     if not response or not sources:
         return sources, chunks
 
+    # 构建 chunk 映射：(normalized_filename, index) -> chunk
     chunk_map = {}
+    raw_chunk_map = {}  # (original_filename, index) -> chunk
     for c in chunks:
         fname = c.get("filename", "")
         idx = c.get("index", 0)
         if fname:
-            chunk_map[(fname, idx)] = c
+            raw_chunk_map[(fname, idx)] = c
+            norm = _normalize_filename(fname)
+            chunk_map[(norm, idx)] = c
 
     cited_pairs = set()
+
+    # 匹配 《文件名——片段N》 格式
     cite_pattern = re.findall(r'《(.+?)——片段\s*(\d+)》', response)
     for fname, idx_str in cite_pattern:
         try:
             idx = int(idx_str)
-            cited_pairs.add((fname.strip(), idx))
+            cited_pairs.add((_normalize_filename(fname), idx))
         except ValueError:
             pass
 
+    # 匹配 《文件名》 格式（无片段编号）
     fname_only_pattern = re.findall(r'《(.+?)》', response)
     for fname in fname_only_pattern:
         fname = fname.strip()
         if '——' not in fname and '片段' not in fname:
+            norm = _normalize_filename(fname)
             for (f, idx) in chunk_map.keys():
-                if f == fname:
+                if f == norm:
                     cited_pairs.add((f, idx))
 
     if not cited_pairs:
         logger.info(f"[Filter] LLM 未引用任何来源")
         return [], []
 
+    # 按标准化文件名匹配 chunks
     cited_chunks = []
     for (fname, idx) in cited_pairs:
         key = (fname, idx)
@@ -507,7 +555,11 @@ def _filter_cited_sources(response: str, sources: list, chunks: list) -> tuple:
             cited_chunks.append(chunk_map[key])
 
     cited_filenames = {fname for fname, _ in cited_pairs}
-    cited_sources = [s for s in sources if s.get("filename", "") in cited_filenames]
+    # 按标准化文件名匹配 sources
+    cited_sources = [
+        s for s in sources
+        if _normalize_filename(s.get("filename", "")) in cited_filenames
+    ]
 
     logger.info(f"[Filter] 检索到 {len(chunks)} 个片段，LLM 引用了 {len(cited_chunks)} 个: {cited_pairs}")
     return cited_sources, cited_chunks
@@ -584,6 +636,7 @@ class EnterpriseAgent:
             "prompt": "",
             "response": "",
             "eval_result": None,
+            "eval_feedback": "",
             "attempt": 0,
             "needs_retry": False,
             "web_search_enabled": self._web_search_enabled,
@@ -649,15 +702,10 @@ class EnterpriseAgent:
                     top1 = chunks[0].get("content", "")[:500]
                     yield {"type": "chunk", "data": f"\n\n📄 降级为 Top-1 原文片段：\n\n{top1}"}
 
-        # 过滤来源
+        # 过滤来源：只显示 LLM 实际引用的来源
         if sources and response:
             cited_sources, cited_chunks = _filter_cited_sources(response, sources, chunks)
-            if cited_sources:
-                yield {"type": "sources", "data": {"sources": cited_sources, "chunks": cited_chunks}}
-            else:
-                yield {"type": "sources", "data": {"sources": sources, "chunks": chunks}}
-        elif sources or chunks:
-            yield {"type": "sources", "data": {"sources": sources, "chunks": chunks}}
+            yield {"type": "sources", "data": {"sources": cited_sources, "chunks": cited_chunks}}
 
         # 保存记忆
         if response and not (should_stop and should_stop()):
